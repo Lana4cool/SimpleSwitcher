@@ -1,9 +1,7 @@
-name: Build SimpleSwitcher (VS/MSBuild)
+name: Build SimpleSwitcher (auto-detect)
 
 on:
-  workflow_dispatch: {}         # запуск вручную из вкладки Actions
-  push:
-    branches: [ main, master ]  # по желанию
+  workflow_dispatch: {}
 
 jobs:
   build:
@@ -13,25 +11,57 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # добавляем MSBuild в PATH
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # Сборка .sln. Принудительно переключаемся на современный toolset VS2022,
-      # чтобы не требовался древний v120 из VS2013.
-      - name: MSBuild (x64 Release)
-        run: >
-          msbuild SimpleSwitcher.sln
-          /p:Configuration=Release
-          /p:Platform=x64
-          /p:PlatformToolset=v143
+      - name: List repo files (for debug)
+        shell: pwsh
+        run: |
+          Write-Host "Repo root content:"
+          Get-ChildItem -Force | Format-List
 
-      # Находим и упаковываем .exe как артефакт
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SimpleSwitcher-x64-Release
-          path: |
-            **\x64\Release\SimpleSwitcher.exe
-            **\Release\SimpleSwitcher.exe
-          if-no-files-found: error
+      # Ищем .sln (с приоритетом на *SimpleSwitcher*.sln)
+      - name: Detect .sln
+        id: detect
+        shell: pwsh
+        run: >
+          $sln = Get-ChildItem -Recurse -Filter *.sln |
+          Where-Object { $_.Name -match 'SimpleSwitcher' } |
+          Select-Object -First 1;
+          if (-not $sln) {
+            $sln = Get-ChildItem -Recurse -Filter *.sln | Select-Object -First 1
+          }
+          if (-not $sln) {
+            Write-Error "No .sln found in repo"; exit 1
+          }
+          "SLN_PATH=$($sln.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Using solution: $($sln.FullName)"
+
+      # На всякий случай заменяем старые toolset на v143 (VS2022)
+      - name: Patch PlatformToolset to v143
+        shell: pwsh
+        run: |
+          $proj = Get-ChildItem -Recurse -Filter *.vcxproj
+          if ($proj) {
+            $proj | ForEach-Object {
+              (Get-Content $_.FullName) -replace 'v120|v141|v142','v143' | Set-Content $_.FullName
+            }
+          }
+
+      # Restore + Build
+      - name: Restore
+        shell: cmd
+        run: msbuild "%SLN_PATH%" /m /t:Restore /verbosity:minimal
+
+      - name: Build (x64 Release)
+        shell: cmd
+        run: msbuild "%SLN_PATH%" /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0 /verbosity:minimal
+
+      # Собираем найденные exe в папку artifact
+      - name: Collect binaries
+        id: collect
+        shell: pwsh
+        run: |
+          $out = Join-Path (Get-Location) "artifact"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $found = Get-ChildItem -Recurse -
