@@ -16,8 +16,7 @@ jobs:
 
       - name: List repo files (for debug)
         shell: pwsh
-        run: |
-          Get-ChildItem -Force | Format-Table -Auto
+        run: Get-ChildItem -Force | Format-Table -Auto
 
       - name: Detect .sln
         id: detect
@@ -26,13 +25,8 @@ jobs:
           $sln = Get-ChildItem -Recurse -Filter *.sln |
             Where-Object { $_.Name -match 'SimpleSwitcher' } |
             Select-Object -First 1
-          if (-not $sln) {
-            $sln = Get-ChildItem -Recurse -Filter *.sln | Select-Object -First 1
-          }
-          if (-not $sln) {
-            Write-Error "No .sln found in repo"
-            exit 1
-          }
+          if (-not $sln) { $sln = Get-ChildItem -Recurse -Filter *.sln | Select-Object -First 1 }
+          if (-not $sln) { Write-Error "No .sln found in repo"; exit 1 }
           "SLN_PATH=$($sln.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Using solution: $($sln.FullName)"
 
@@ -42,6 +36,21 @@ jobs:
           Get-ChildItem -Recurse -Filter *.vcxproj | ForEach-Object {
             (Get-Content $_.FullName) -replace 'v120|v141|v142','v143' | Set-Content $_.FullName
           }
+
+      # ===== NEW: install Boost via vcpkg and integrate with MSBuild =====
+      - name: Install vcpkg + Boost (x64)
+        shell: pwsh
+        run: |
+          $env:VCPKG_DIR = "$env:USERPROFILE\vcpkg"
+          git clone https://github.com/microsoft/vcpkg $env:VCPKG_DIR
+          & "$env:VCPKG_DIR\bootstrap-vcpkg.bat"
+          & "$env:VCPKG_DIR\vcpkg.exe" integrate install
+          # Минимум нужен boost-algorithm (header-only). При желании можно добавить ещё пакеты.
+          & "$env:VCPKG_DIR\vcpkg.exe" install boost-algorithm:x64-windows
+          # На всякий случай укажем путь include/libs — MSBuild интеграция обычно хватает, но так надёжнее.
+          echo "INCLUDE=$env:VCPKG_DIR\installed\x64-windows\include;$env:INCLUDE" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          echo "LIB=$env:VCPKG_DIR\installed\x64-windows\lib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      # ==================================================================
 
       - name: Restore
         shell: cmd
@@ -56,10 +65,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path artifact | Out-Null
           $bins = Get-ChildItem -Recurse -Include "SimpleSwitcher*.exe"
-          if (-not $bins) {
-            Write-Error "No SimpleSwitcher*.exe found after build"
-            exit 1
-          }
+          if (-not $bins) { Write-Error "No SimpleSwitcher*.exe found after build"; exit 1 }
           $bins | Copy-Item -Destination artifact -Force
           Get-ChildItem artifact
 
