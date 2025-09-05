@@ -1,0 +1,37 @@
+name: Build SimpleSwitcher (VS/MSBuild)
+
+on:
+  workflow_dispatch: {}         # запуск вручную из вкладки Actions
+  push:
+    branches: [ main, master ]  # по желанию
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # добавляем MSBuild в PATH
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      # Сборка .sln. Принудительно переключаемся на современный toolset VS2022,
+      # чтобы не требовался древний v120 из VS2013.
+      - name: MSBuild (x64 Release)
+        run: >
+          msbuild SimpleSwitcher.sln
+          /p:Configuration=Release
+          /p:Platform=x64
+          /p:PlatformToolset=v143
+
+      # Находим и упаковываем .exe как артефакт
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleSwitcher-x64-Release
+          path: |
+            **\x64\Release\SimpleSwitcher.exe
+            **\Release\SimpleSwitcher.exe
+          if-no-files-found: error
