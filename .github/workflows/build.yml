@@ -17,38 +17,32 @@ jobs:
       - name: List repo files (for debug)
         shell: pwsh
         run: |
-          Write-Host "Repo root content:"
-          Get-ChildItem -Force | Format-List
+          Get-ChildItem -Force | Format-Table -Auto
 
-      # Ищем .sln (с приоритетом на *SimpleSwitcher*.sln)
       - name: Detect .sln
         id: detect
         shell: pwsh
-        run: >
+        run: |
           $sln = Get-ChildItem -Recurse -Filter *.sln |
-          Where-Object { $_.Name -match 'SimpleSwitcher' } |
-          Select-Object -First 1;
+            Where-Object { $_.Name -match 'SimpleSwitcher' } |
+            Select-Object -First 1
           if (-not $sln) {
             $sln = Get-ChildItem -Recurse -Filter *.sln | Select-Object -First 1
           }
           if (-not $sln) {
-            Write-Error "No .sln found in repo"; exit 1
+            Write-Error "No .sln found in repo"
+            exit 1
           }
-          "SLN_PATH=$($sln.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "SLN_PATH=$($sln.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Using solution: $($sln.FullName)"
 
-      # На всякий случай заменяем старые toolset на v143 (VS2022)
       - name: Patch PlatformToolset to v143
         shell: pwsh
         run: |
-          $proj = Get-ChildItem -Recurse -Filter *.vcxproj
-          if ($proj) {
-            $proj | ForEach-Object {
-              (Get-Content $_.FullName) -replace 'v120|v141|v142','v143' | Set-Content $_.FullName
-            }
+          Get-ChildItem -Recurse -Filter *.vcxproj | ForEach-Object {
+            (Get-Content $_.FullName) -replace 'v120|v141|v142','v143' | Set-Content $_.FullName
           }
 
-      # Restore + Build
       - name: Restore
         shell: cmd
         run: msbuild "%SLN_PATH%" /m /t:Restore /verbosity:minimal
@@ -57,11 +51,21 @@ jobs:
         shell: cmd
         run: msbuild "%SLN_PATH%" /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0 /verbosity:minimal
 
-      # Собираем найденные exe в папку artifact
       - name: Collect binaries
-        id: collect
         shell: pwsh
         run: |
-          $out = Join-Path (Get-Location) "artifact"
-          New-Item -ItemType Directory -Force -Path $out | Out-Null
-          $found = Get-ChildItem -Recurse -
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          $bins = Get-ChildItem -Recurse -Include "SimpleSwitcher*.exe"
+          if (-not $bins) {
+            Write-Error "No SimpleSwitcher*.exe found after build"
+            exit 1
+          }
+          $bins | Copy-Item -Destination artifact -Force
+          Get-ChildItem artifact
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleSwitcher-x64-Release
+          path: artifact
+          if-no-files-found: error
