@@ -1,11 +1,13 @@
-name: Build SimpleSwitcher (auto-detect)
+name: Build SimpleSwitcher
 
 on:
   workflow_dispatch: {}
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT: ${{ runner.temp }}\vcpkg
 
     steps:
       - name: Checkout
@@ -14,61 +16,48 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: List repo files (for debug)
-        shell: pwsh
-        run: Get-ChildItem -Force | Format-Table -Auto
-
-      - name: Detect .sln
-        id: detect
+      - name: Locate .sln
         shell: pwsh
         run: |
-          $sln = Get-ChildItem -Recurse -Filter *.sln |
-            Where-Object { $_.Name -match 'SimpleSwitcher' } |
-            Select-Object -First 1
-          if (-not $sln) { $sln = Get-ChildItem -Recurse -Filter *.sln | Select-Object -First 1 }
-          if (-not $sln) { Write-Error "No .sln found in repo"; exit 1 }
+          $sln = Get-ChildItem -Recurse -Filter *.sln | Select-Object -First 1
+          if (-not $sln) { throw "No .sln found in repository" }
           "SLN_PATH=$($sln.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Using solution: $($sln.FullName)"
 
-      - name: Patch PlatformToolset to v143
+      - name: Force VS2022 toolset (v143)
         shell: pwsh
         run: |
           Get-ChildItem -Recurse -Filter *.vcxproj | ForEach-Object {
             (Get-Content $_.FullName) -replace 'v120|v141|v142','v143' | Set-Content $_.FullName
           }
 
-# ===== install Boost via vcpkg =====
-- name: Install vcpkg + Boost (x64)
-  shell: pwsh
-  run: |
-    $env:VCPKG_DIR = "$env:USERPROFILE\vcpkg"
-    git clone https://github.com/microsoft/vcpkg $env:VCPKG_DIR
-    & "$env:VCPKG_DIR\bootstrap-vcpkg.bat"
-    & "$env:VCPKG_DIR\vcpkg.exe" integrate install
-    # нужные хедеры для проекта
-    & "$env:VCPKG_DIR\vcpkg.exe" install boost-algorithm:x64-windows boost-property-tree:x64-windows
-    # на всякий случай добавим include/lib в env
-    echo "INCLUDE=$env:VCPKG_DIR\installed\x64-windows\include;$env:INCLUDE" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-    echo "LIB=$env:VCPKG_DIR\installed\x64-windows\lib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-# ===================================
-
+      - name: Install vcpkg + Boost (algorithm, property_tree)
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat"
+          & "$env:VCPKG_ROOT\vcpkg.exe" integrate install
+          & "$env:VCPKG_ROOT\vcpkg.exe" install boost-algorithm:x64-windows boost-property-tree:x64-windows
+          "VCPKG_DEFAULT_TRIPLET=x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "INCLUDE=$env:VCPKG_ROOT\installed\x64-windows\include;$env:INCLUDE" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LIB=$env:VCPKG_ROOT\installed\x64-windows\lib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Restore
         shell: cmd
-        run: msbuild "%SLN_PATH%" /m /t:Restore /verbosity:minimal
+        run: msbuild "%SLN_PATH%" /m /t:Restore /p:Platform=x64 /verbosity:minimal
 
-      - name: Build (x64 Release)
+      - name: Build (Release x64)
         shell: cmd
         run: msbuild "%SLN_PATH%" /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0 /verbosity:minimal
 
-      - name: Collect binaries
+      - name: Collect exe
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifact | Out-Null
           $bins = Get-ChildItem -Recurse -Include "SimpleSwitcher*.exe"
-          if (-not $bins) { Write-Error "No SimpleSwitcher*.exe found after build"; exit 1 }
+          if (-not $bins) { throw "Build finished but exe not found. Search pattern: SimpleSwitcher*.exe" }
           $bins | Copy-Item -Destination artifact -Force
-          Get-ChildItem artifact
+          Get-ChildItem artifact | Format-Table -Auto
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
